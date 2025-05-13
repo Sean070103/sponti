@@ -1,83 +1,64 @@
 import { NextResponse } from 'next/server';
-import { SignJWT } from 'jose';
+import clientPromise from '@/lib/mongodb';
 import bcrypt from 'bcryptjs';
-import { cookies } from 'next/headers';
-import { z } from 'zod';
+import { sign } from 'jsonwebtoken';
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'default_secret_please_change'
-);
-
-const loginSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(1, 'Password is required'),
-});
+if (!process.env.JWT_SECRET) {
+  throw new Error('Please add JWT_SECRET to .env.local');
+}
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const validatedData = loginSchema.parse(body);
+    const { email, password } = await request.json();
 
-    // In a real application, you would fetch the user from your database
-    // For now, we'll use a mock user
-    const mockUser = {
-      id: '1',
-      email: 'test@example.com',
-      password: '$2a$10$X7z3bJwQ3Q3Q3Q3Q3Q3Q3O', // Hashed password for 'password123'
-      name: 'Test User',
-    };
-
-    if (validatedData.email !== mockUser.email) {
+    if (!email || !password) {
       return NextResponse.json(
-        { error: 'Invalid email or password' },
-        { status: 401 }
-      );
-    }
-
-    const isValidPassword = await bcrypt.compare(
-      validatedData.password,
-      mockUser.password
-    );
-
-    if (!isValidPassword) {
-      return NextResponse.json(
-        { error: 'Invalid email or password' },
-        { status: 401 }
-      );
-    }
-
-    const token = await new SignJWT({})
-      .setProtectedHeader({ alg: 'HS256' })
-      .setSubject(mockUser.id)
-      .setIssuedAt()
-      .setExpirationTime('24h')
-      .sign(JWT_SECRET);
-
-    cookies().set('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 60 * 60 * 24, // 24 hours
-    });
-
-    return NextResponse.json({
-      user: {
-        id: mockUser.id,
-        name: mockUser.name,
-        email: mockUser.email,
-      },
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: error.errors[0].message },
+        { error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
+    const client = await clientPromise;
+    const db = client.db('sponti');
+    
+    // Find user
+    const user = await db.collection('users').findOne({ email });
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Invalid credentials' },
+        { status: 401 }
+      );
+    }
+
+    // Verify password
+    const isValid = await bcrypt.compare(password, user.password);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: 'Invalid credentials' },
+        { status: 401 }
+      );
+    }
+
+    // Create JWT token
+    const token = sign(
+      { userId: user._id, email: user.email },
+      process.env.JWT_SECRET!,
+      { expiresIn: '7d' }
+    );
+
+    return NextResponse.json({
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+      },
+      token,
+    });
+  } catch (error) {
     console.error('Login error:', error);
     return NextResponse.json(
-      { error: 'An error occurred during login' },
+      { error: 'Failed to login' },
       { status: 500 }
     );
   }
