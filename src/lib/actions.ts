@@ -1,6 +1,6 @@
 'use server';
 
-import { prisma } from './prisma';
+import clientPromise from './mongodb';
 import {
   comparePasswords,
   createToken,
@@ -28,24 +28,25 @@ export async function signup(formData: FormData) {
   }
 
   try {
-    const existingUser = await prisma.user.findUnique({
-      where: { email: parsed.data.email },
-    });
+    const client = await clientPromise;
+    const db = client.db('sponti');
+    const users = db.collection('users');
 
+    const existingUser = await users.findOne({ email: parsed.data.email });
     if (existingUser) {
       return { error: 'Email already exists' };
     }
 
     const hashedPassword = await hashPassword(parsed.data.password);
-    const user = await prisma.user.create({
-      data: {
-        email: parsed.data.email,
-        password: hashedPassword,
-        name: parsed.data.name,
-      },
+    const user = await users.insertOne({
+      email: parsed.data.email,
+      password: hashedPassword,
+      name: parsed.data.name,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
-    await createToken(user.id);
+    await createToken(user.insertedId.toString());
     revalidatePath('/');
     return { success: true };
   } catch (error) {
@@ -74,10 +75,11 @@ export async function signin(formData: FormData) {
   }
 
   try {
-    const user = await prisma.user.findUnique({
-      where: { email: parsed.data.email },
-    });
+    const client = await clientPromise;
+    const db = client.db('sponti');
+    const users = db.collection('users');
 
+    const user = await users.findOne({ email: parsed.data.email });
     if (!user) {
       return { error: 'Invalid credentials' };
     }
@@ -87,7 +89,7 @@ export async function signin(formData: FormData) {
       return { error: 'Invalid credentials' };
     }
 
-    await createToken(user.id);
+    await createToken(user._id.toString());
     revalidatePath('/');
     return { success: true };
   } catch (error) {
